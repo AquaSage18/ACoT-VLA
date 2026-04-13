@@ -1936,6 +1936,98 @@ _CONFIGS = [
         freeze_filter = acot_vla.ACOTConfig(paligemma_variant="gemma_2b_lora").get_freeze_filter(
             freeze_vision = False, freeze_llm = True, freeze_llm_embedder=True, freeze_dual_ae=[False, False]
         )
+    ),
+    # Custom config for clean_the_desktop task from Reasoning2Action-Sim dataset
+    # This is adapted from acot_icra_simulation_challenge_reasoning_to_action for a single task
+    TrainConfig(
+        name="clean_the_desktop_part_1",
+        # ACoT-VLA with EAR only (no IAR), horizons=16 for memory efficiency
+        model=acot_vla.ACOTConfig(
+            coarse_action_horizon=20,
+            action_horizon=20,
+            paligemma_variant="gemma_2b_lora",
+            adopt_explicit_action_reasoner=True,
+            adopt_implicit_action_reasoner=False,
+            downsample_based_implicit_extractor=False,
+        ),
+        data=LerobotACOTGo2DataConfig(
+            # Point to your local dataset
+            repo_id="/data1/Reasoning2Action-Sim/dataset_without_depth/clean_the_desktop_part_1",
+            # Use the task name from tasks.jsonl to generate prompt
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            default_prompt="Clear the desktop: pick up the pen on the left side and place it into the pen holder, close the laptop, pick up the tissue on the table and place it into the trash bin on the right side. Then, pick up the mouse and place it on the right side of the laptop. Finally, straighten the colored pencil box",
+            # Optional: inject more descriptive prompts during training
+            prompt_map_inject_to_training={
+                "Clear the desktop": (
+                    "pick up the pen on the left side and place it into the pen holder, "
+                    "close the laptop, pick up the tissue on the table and place it into the trash bin on the right side. "
+                    "Then, pick up the mouse and place it on the right side of the laptop. "
+                    "Finally, straighten the colored pencil box",
+                    0.5  
+                )
+            },
+            assets=AssetsConfig(
+                assets_dir=None,
+                asset_id="/home/yangnan/projects/ACoT-VLA/assets/clean_the_desktop_part_1",
+            ),
+            repack_transforms =_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "top_head": "observation.images.top_head",
+                                "hand_left": "observation.images.hand_left",
+                                "hand_right": "observation.images.hand_right",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                            # repack task name and episode id here for specific prompt replacement in training
+                            "task": "task",
+                            "episode_index": "episode_index"
+                        }
+                    )
+                ]
+            ),
+            # this line is important for action cot training, it shifts the action sequence by a certain number of steps 
+            # to create the input for the coarse action reasoner and the final action head. 
+            # You can tune these values based on the characteristics of your dataset. 
+            # Generally, we find that having a small positive shift (e.g. 1 or 2) works well.
+            joint_action_shifts = (2, 1),
+            # if using delta action to train model is excepted, set True in extra_delta_transform
+            extra_delta_transform = (True, True),
+            # delta_action_mask controls which dimensions of the action are used for delta action transformation.
+            delta_action_mask = _transforms.make_bool_mask(14, -18)
+        ),
+        
+        # Training hyperparameters
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        # Load pre-trained Pi0.5 weights (base model for ACoT)
+        weight_loader=weight_loaders.ACOTCheckpointWeightLoader(
+            "/data/yangnan/VLA/pi05_base/params"
+        ),
+
+        # Adjust based on your GPU memory
+        num_train_steps=30_000,
+        save_interval = 5000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 200,
+        num_workers = 32 if not os.getenv("DEBUG_MODE", default=False) == "true" else 12,
+        batch_size = 4 if not os.getenv("DEBUG_MODE", default=False) == "true" else 4,
+        # Freeze the LLM and embedder for efficient training (LoRA)
+        freeze_filter=acot_vla.ACOTConfig(paligemma_variant="gemma_2b_lora").get_freeze_filter(
+            freeze_vision=False,
+            freeze_llm=True,
+            freeze_llm_embedder=True,
+            freeze_dual_ae=[False, False]
+        ),
     )
 ]
 
